@@ -55,7 +55,7 @@ else:
     selected_users = st.sidebar.multiselect(
         "확인할 유저를 선택하세요 (Top 20 한정)",
         top_20_nicknames,  # 선택지는 20명뿐
-        default=top_20_nicknames[:20] # 기본적으로 1~5등 5명을 미리 찍어줌
+        default=top_20_nicknames[:20] # 기본적으로 20명
     )
 
     if selected_users:
@@ -93,7 +93,7 @@ else:
     all_users = sorted(df['nickname'].unique())
     
     # 기본적으로 상위 5명을 선택해둠
-    default_users = latest_df['nickname'].head(5).tolist()
+    default_users = latest_df['nickname'].head(20).tolist()
     
     selected_users = st.sidebar.multiselect(
         "확인할 유저를 선택하세요 (복수 선택 가능)",
