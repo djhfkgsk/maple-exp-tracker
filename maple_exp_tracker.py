@@ -46,7 +46,8 @@ async def fetch_user_data(session, nickname):
 
     # 2. 캐릭터 기본 정보 조회 (레벨, 경험치 등)
     info_url = "https://open.api.nexon.com/maplestory/v1/character/basic"
-    yesterday = (datetime.now(pytz.timezone('Asia/Seoul')).date() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+    # 현재 서버 시간(UTC)에 9시간을 더해 '한국 시간'을 만들고, 거기서 하루를 뺍니다.
+    yesterday = (datetime.now() + pd.Timedelta(hours=9) - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
     
     try:
         async with session.get(info_url, params={"ocid": ocid, "date": yesterday}, headers=HEADERS) as resp:
@@ -58,7 +59,8 @@ async def fetch_user_data(session, nickname):
             
             # 필요한 데이터 추출
             return {
-                "timestamp": datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M:%S'),
+                # UTC(서버 기본 시간)로 저장 -> app.py가 나중에 +9시간 해줌 (완벽!)
+                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 "nickname": nickname,
                 "world": char_data.get("character_world_name", "Unknown"),
                 "level": char_data.get("character_level", 0),
