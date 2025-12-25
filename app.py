@@ -107,14 +107,14 @@ st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여�
 if df.empty:
     st.warning("아직 수집된 데이터가 없습니다.")
 else:
-    # 1. 랭킹 산정
+    # 1. 랭킹 산정 (Top 15 기준)
     latest_time = df['timestamp'].max()
     latest_ranking_df = df[df['timestamp'] == latest_time].sort_values(by='total_exp', ascending=False)
     
     # 닉네임 -> 순위 매핑
     rank_map = {row['nickname']: i+1 for i, row in enumerate(latest_ranking_df.to_dict('records'))}
     
-    # Top 15 리스트
+    # Top 15 리스트 추출
     top_15_df = latest_ranking_df.head(15)
     top_15_nicknames = top_15_df['nickname'].tolist()
     
@@ -134,7 +134,7 @@ else:
     )
 
     if selected_users:
-        # 닉네임 필터링 (그래프용)
+        # 닉네임 필터링
         user_filtered_df = df[df['nickname'].isin(selected_users)].copy()
         user_filtered_df['display_name'] = user_filtered_df.apply(
             lambda x: f"{rank_map.get(x['nickname'], 999)}위 {x['nickname']}", axis=1
@@ -147,8 +147,6 @@ else:
         # -------------------------------------------------------
         st.subheader("⏳ 분석 구간 설정")
         
-        # 전체 데이터 기준 min/max (선택된 유저 기준이 아님, 그래야 전체 비교 가능)
-        # 하지만 슬라이더 범위는 편의상 선택된 유저 기준으로 잡음
         min_time = user_filtered_df['timestamp'].min()
         max_time = user_filtered_df['timestamp'].max()
         
@@ -166,19 +164,15 @@ else:
             st.caption(f"선택 구간: {start_time.strftime('%m/%d %H:%M')} ~ {end_time.strftime('%m/%d %H:%M')}")
         
         # -------------------------------------------------------
-        # [업그레이드] 전체 Top 15 유저 백그라운드 속도 계산
+        # Top 15 전체 백그라운드 속도 계산 & 역전 예측
         # -------------------------------------------------------
-        # 선택된 유저뿐만 아니라, Top 15 전체의 속도를 구해야 '바로 윗등수'와 비교 가능
-        
-        # 1. 구간 데이터 필터링 (Top 15 전체)
         top_15_all_data = df[
             (df['nickname'].isin(top_15_nicknames)) &
             (df['timestamp'] >= start_time) &
             (df['timestamp'] <= end_time)
         ].copy()
 
-        # 2. 유저별 속도 및 현재 상태 계산
-        user_metrics = {} # {닉네임: {속도, 현재경험치, 랭킹}}
+        user_metrics = {} 
         
         for nick in top_15_nicknames:
             u_data = top_15_all_data[top_15_all_data['nickname'] == nick].sort_values('timestamp')
@@ -203,18 +197,14 @@ else:
                 'gained_exp': exp_diff
             }
 
-        # 3. 순위대로 정렬 (1위 ~ 15위)
         sorted_metrics = sorted(user_metrics.values(), key=lambda x: x['rank'])
-        
-        # 4. 역전 시간 계산 (바로 윗 등수와 비교)
-        overtake_info = {} # {닉네임: "2시간 30분"}
+        overtake_info = {} 
         
         for i in range(1, len(sorted_metrics)):
-            me = sorted_metrics[i]      # 현재 유저 (예: 10등)
-            target = sorted_metrics[i-1] # 바로 윗 유저 (예: 9등)
-            
+            me = sorted_metrics[i]
+            target = sorted_metrics[i-1]
             gap = target['current_total_exp'] - me['current_total_exp']
-            speed_gap = me['speed'] - target['speed'] # 내가 얼마나 더 빠른가?
+            speed_gap = me['speed'] - target['speed']
             
             msg = "-"
             target_name = f"{target['rank']}위 {target['nickname']}"
@@ -222,11 +212,9 @@ else:
             if gap <= 0:
                 msg = "이미 역전함"
             elif speed_gap <= 0:
-                msg = "추월 불가"
+                msg = "추월 불가 (느림)"
             else:
-                # 역전 가능
                 hours_needed = gap / speed_gap
-                
                 days = int(hours_needed // 24)
                 rem_hours = int(hours_needed % 24)
                 mins = int((hours_needed * 60) % 60)
@@ -235,21 +223,15 @@ else:
                 if days > 0: time_str.append(f"{days}일")
                 if rem_hours > 0: time_str.append(f"{rem_hours}시간")
                 time_str.append(f"{mins}분")
-                
                 msg = " ".join(time_str) + " 후"
             
-            overtake_info[me['nickname']] = {
-                "target": target_name,
-                "time": msg,
-                "gap": gap
-            }
+            overtake_info[me['nickname']] = {"target": target_name, "time": msg, "gap": gap}
             
-        # 1등은 목표가 없음
         if sorted_metrics:
-            overtake_info[sorted_metrics[0]['nickname']] = {"target": "-", "time": "추격 목표 없음", "gap": 0}
+            overtake_info[sorted_metrics[0]['nickname']] = {"target": "-", "time": "독주 중 👑", "gap": 0}
 
         # -------------------------------------------------------
-        # 표 만들기 (선택된 유저만 표시)
+        # 표 만들기
         # -------------------------------------------------------
         st.subheader("📊 사냥 효율 및 추격 현황표")
         
@@ -257,11 +239,9 @@ else:
         for nick in selected_users:
             if nick not in user_metrics:
                 continue
-                
             u = user_metrics[nick]
             o_info = overtake_info.get(nick, {"target": "?", "time": "?", "gap": 0})
             
-            # 속도 (%/hr)
             current_req = LEVEL_REQ_EXP.get(int(u['level_info'].split()[0]), 1)
             percent_speed = (u['speed'] / current_req) * 100
             
@@ -276,10 +256,7 @@ else:
             })
             
         if display_rows:
-            # 순위순 정렬
             final_table_df = pd.DataFrame(display_rows).sort_values("순위")
-            
-            # 스타일링 (역전 시간 강조)
             st.dataframe(
                 final_table_df, 
                 hide_index=True, 
@@ -293,9 +270,8 @@ else:
             st.info("데이터가 부족하여 계산할 수 없습니다.")
 
         # -------------------------------------------------------
-        # 그래프 그리기 (기존 로직 유지)
+        # 그래프 그리기
         # -------------------------------------------------------
-        # 구간 필터링된 데이터 사용
         final_df = user_filtered_df[
             (user_filtered_df['timestamp'] >= start_time) & 
             (user_filtered_df['timestamp'] <= end_time)
@@ -311,6 +287,37 @@ else:
             )
 
             plot_df = final_df.copy()
+
+            # ========================================================
+            # [신규 추가] 툴팁용 순간 속도 계산 로직
+            # ========================================================
+            # 1. 계산 편의를 위해 정렬
+            plot_df = plot_df.sort_values(by=['nickname', 'timestamp'])
+            
+            # 2. 직전 데이터와의 차이(Delta) 계산
+            # 시간 차이 (시간 단위)
+            plot_df['dt'] = plot_df.groupby('nickname')['timestamp'].diff().dt.total_seconds() / 3600
+            # 경험치 차이
+            plot_df['d_exp'] = plot_df.groupby('nickname')['total_exp'].diff()
+            
+            # 3. 속도 문자열 포맷팅 함수
+            def get_speed_tooltip(row):
+                # 첫 번째 점이거나 시간 차이가 없으면 속도 계산 불가
+                if pd.isna(row['dt']) or row['dt'] <= 0:
+                    return "-"
+                
+                # 시간당 획득 경험치
+                speed_per_hour = row['d_exp'] / row['dt']
+                
+                # 레벨별 필요 경험치로 나누어 %/hr 계산
+                req_exp = LEVEL_REQ_EXP.get(row['level'], 1)
+                percent_speed = (speed_per_hour / req_exp) * 100
+                
+                return f"+{percent_speed:.3f}%/hr"
+
+            # 4. 새로운 컬럼 'speed_tooltip' 생성
+            plot_df['speed_tooltip'] = plot_df.apply(get_speed_tooltip, axis=1)
+            # ========================================================
 
             if "기간 내 획득" in view_mode:
                 plot_df['value'] = plot_df.groupby('nickname')['total_exp'].transform(lambda x: x - x.min())
@@ -335,9 +342,31 @@ else:
                 color='display_name',
                 markers=True,
                 title=title_text,
-                hover_data={'timestamp': '|%m-%d %H:%M', 'level': True, 'exp_percent_str': True, 'value': True, 'display_name': False},
+                # [수정됨] 툴팁 설정에 'speed_tooltip' 추가 및 이름 변경
+                hover_data={
+                    'timestamp': '|%m-%d %H:%M', 
+                    'level': True, 
+                    'exp_percent_str': True, 
+                    'speed_tooltip': True, # <--- 이거 추가됨
+                    'value': True, 
+                    'display_name': False,
+                    'dt': False, # 임시 컬럼 숨김
+                    'd_exp': False # 임시 컬럼 숨김
+                },
                 category_orders={"display_name": sorted_legends}
             )
+            
+            # 툴팁 라벨 이름 예쁘게 변경
+            fig.update_traces(
+                hovertemplate="<br>".join([
+                    "<b>%{x}</b>",
+                    "Level: %{customdata[1]}",
+                    "Exp: %{customdata[2]}",
+                    "<b>⚡ 속도: %{customdata[3]}</b>", # <--- 강조 표시
+                    "Value: %{y}"
+                ])
+            )
+            
             fig.update_layout(yaxis_title=y_title)
             if "1등과의 격차" in view_mode:
                 fig.update_yaxes(autorange="reversed")
