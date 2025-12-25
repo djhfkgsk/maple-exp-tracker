@@ -13,11 +13,11 @@ st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여�
 # 데이터 불러오기 함수
 @st.cache_data(ttl=600) # 10분마다 새로고침
 def load_data():
-    if not os.path.exists('exp_history.csv'):
+    if not os.path.exists('Exp_history.csv'):
         return pd.DataFrame()
     
     # CSV 읽기
-    df = pd.read_csv('exp_history.csv')
+    df = pd.read_csv('Exp_history.csv')
     
     # timestamp를 날짜 형식으로 변환
     df['timestamp'] = pd.to_datetime(df['timestamp'])
