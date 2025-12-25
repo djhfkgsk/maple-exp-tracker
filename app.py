@@ -105,17 +105,17 @@ else:
     # enumerate는 0부터 시작하므로 +1 해서 1등부터 시작
     rank_map = {row['nickname']: i+1 for i, row in enumerate(latest_ranking_df.to_dict('records'))}
     
-    # Top 20명 추출
-    top_20_df = latest_ranking_df.head(20)
-    top_20_nicknames = top_20_df['nickname'].tolist()
+    # Top 15명 추출
+    top_15_df = latest_ranking_df.head(15)
+    top_15_nicknames = top_15_df['nickname'].tolist()
     
-    st.subheader(f"🏆 현재 Top 20 랭커 현황")
+    st.subheader(f"🏆 현재 Top 15 랭커 현황")
     
     st.sidebar.header("검색 옵션")
     selected_users = st.sidebar.multiselect(
-        "확인할 유저를 선택하세요 (Top 20 한정)",
-        top_20_nicknames, 
-        default=top_20_nicknames[:20]
+        "확인할 유저를 선택하세요 (Top 15 한정)",
+        top_15_nicknames, 
+        default=top_15_nicknames[:15]
     )
 
     if selected_users:
