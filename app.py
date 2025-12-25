@@ -95,11 +95,18 @@ st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여�
 if df.empty:
     st.warning("아직 수집된 데이터가 없습니다.")
 else:
-    # 최신 데이터 기준 랭킹 산정
+    # 1. 최신 데이터 기준 전체 랭킹 산정 (순위 매기기용)
     latest_time = df['timestamp'].max()
-    ranked_df = df[df['timestamp'] == latest_time].sort_values(by='total_exp', ascending=False)
     
-    top_20_df = ranked_df.head(20)
+    # 전체 인원을 total_exp로 정렬
+    latest_ranking_df = df[df['timestamp'] == latest_time].sort_values(by='total_exp', ascending=False)
+    
+    # [핵심] 순위 정보 매핑 (닉네임 -> 현재 순위)
+    # enumerate는 0부터 시작하므로 +1 해서 1등부터 시작
+    rank_map = {row['nickname']: i+1 for i, row in enumerate(latest_ranking_df.to_dict('records'))}
+    
+    # Top 20명 추출
+    top_20_df = latest_ranking_df.head(20)
     top_20_nicknames = top_20_df['nickname'].tolist()
     
     st.subheader(f"🏆 현재 Top 20 랭커 현황")
@@ -112,20 +119,24 @@ else:
     )
 
     if selected_users:
-        # 1. 닉네임으로 먼저 필터링
-        user_filtered_df = df[df['nickname'].isin(selected_users)]
+        user_filtered_df = df[df['nickname'].isin(selected_users)].copy()
         
-        st.divider() # 구분선
+        # [핵심] 닉네임을 '1위 닉네임' 형태로 변경
+        # 이렇게 하면 그래프 범례(Legend)에 순위가 같이 나옵니다.
+        user_filtered_df['display_name'] = user_filtered_df['nickname'].apply(
+            lambda x: f"{rank_map.get(x, 999)}위 {x}"
+        )
+
+        st.divider()
         
         # -------------------------------------------------------
-        # [신규 기능] 시간 구간 슬라이더 (Time Slider)
+        # 시간 구간 슬라이더
         # -------------------------------------------------------
         min_time = user_filtered_df['timestamp'].min()
         max_time = user_filtered_df['timestamp'].max()
         
         st.subheader("⏳ 분석 구간 설정")
         
-        # 슬라이더 생성 (기본값: 전체 구간)
         start_time, end_time = st.slider(
             "분석하고 싶은 시간대를 선택하세요:",
             min_value=min_time.to_pydatetime(),
@@ -134,8 +145,6 @@ else:
             format="MM/DD HH:mm"
         )
         
-        # 2. 선택된 시간대로 데이터 자르기
-        # 이 과정이 있어야 '기간 내 획득량'이 선택된 시작점부터 0으로 계산됨
         final_df = user_filtered_df[
             (user_filtered_df['timestamp'] >= start_time) & 
             (user_filtered_df['timestamp'] <= end_time)
@@ -145,7 +154,7 @@ else:
             st.warning("선택된 구간에 데이터가 없습니다.")
         else:
             # -------------------------------------------------------
-            # 보기 모드 및 그래프 로직
+            # 그래프 로직
             # -------------------------------------------------------
             st.subheader("📈 경험치 경쟁 현황")
             
@@ -158,7 +167,6 @@ else:
             plot_df = final_df.copy()
 
             if "기간 내 획득" in view_mode:
-                # [중요] 슬라이더로 자른 구간의 '시작점'을 0으로 만듦
                 plot_df['value'] = plot_df.groupby('nickname')['total_exp'].transform(lambda x: x - x.min())
                 y_title = '선택 구간 내 획득 경험치 (+)'
                 title_text = f'해당 구간 사냥 승자는? ({start_time.strftime("%H:%M")} ~ {end_time.strftime("%H:%M")})'
@@ -174,14 +182,19 @@ else:
                 y_title = '총 누적 경험치'
                 title_text = 'Top 랭커 절대 순위'
 
+            # 범례 정렬을 위해 순서 리스트 생성 (1위, 2위, 3위... 순서대로)
+            # 이걸 안 하면 1위, 10위, 11위... 2위 순서로 나옴 (문자열 정렬 때문)
+            sorted_legends = sorted(plot_df['display_name'].unique(), key=lambda x: int(x.split('위')[0]))
+
             fig = px.line(
                 plot_df, 
                 x='timestamp', 
                 y='value', 
-                color='nickname',
+                color='display_name', # [변경] 닉네임 대신 순위 포함된 이름 사용
                 markers=True,
                 title=title_text,
-                hover_data=['level', 'world', 'exp']
+                hover_data=['level', 'world', 'exp'],
+                category_orders={"display_name": sorted_legends} # [핵심] 범례 순서 강제 고정
             )
             
             fig.update_layout(yaxis_title=y_title)
