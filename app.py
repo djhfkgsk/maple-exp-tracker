@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="메이플 랭커 경험치 추적기", layout="wide")
 
 # ==========================================
-# [설정] 깃허브 정보 (본인 아이디로 수정 불필요, 자동 적용됨)
+# [설정] 깃허브 정보
 # ==========================================
 GITHUB_OWNER = "djhfkgsk"
 GITHUB_REPO = "maple-exp-tracker"
@@ -36,9 +36,9 @@ def trigger_github_action():
     return response.status_code
 
 # 데이터 로드 함수 (캐시 사용)
-@st.cache_data(ttl=60) # 1분마다 캐시 초기화 (버튼 누르고 빨리 반영되라고)
+@st.cache_data(ttl=60) # 1분마다 캐시 초기화
 def load_data():
-    # 깃허브 Raw Data (소문자/대문자 이슈 고려)
+    # 깃허브 Raw Data
     url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/master/exp_history.csv"
     try:
         df = pd.read_csv(url)
@@ -54,13 +54,9 @@ if not df.empty:
     last_update = df['timestamp'].max()
     current_time = datetime.now()
     
-    # 한국 시간 보정 (GitHub 서버는 보통 UTC 기준일 수 있으나, 단순 차이 계산은 OK)
-    # 여기서는 단순하게 '마지막 데이터 시간'과 '현재 시간'의 차이를 봅니다.
-    # 데이터가 15분 이내에 갱신되었다면 버튼을 잠급니다.
     time_diff = current_time - last_update
     
     # 쿨타임 설정: 15분
-    # (주의: 서버 시간차 때문에 약간의 오차가 있을 수 있으나, 보통 15분이면 충분합니다)
     if time_diff < timedelta(minutes=15):
         st.sidebar.success(f"✅ 최신 상태입니다.\n({last_update.strftime('%H:%M')} 기준)")
         st.sidebar.info("데이터는 15분마다 갱신 가능합니다.")
@@ -86,15 +82,17 @@ st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여�
 if df.empty:
     st.warning("아직 수집된 데이터가 없습니다.")
 else:
-    # ... (기존 그래프 로직과 동일) ...
+    # 1. 최신 데이터 기준 랭킹 산정
     latest_time = df['timestamp'].max()
     ranked_df = df[df['timestamp'] == latest_time].sort_values(by=['level', 'exp'], ascending=False)
     
+    # Top 20명만 자르기
     top_20_df = ranked_df.head(20)
     top_20_nicknames = top_20_df['nickname'].tolist()
     
     st.subheader(f"🏆 현재 Top 20 랭커 현황")
     
+    # 2. 사이드바 검색 옵션
     st.sidebar.header("검색 옵션")
     selected_users = st.sidebar.multiselect(
         "확인할 유저를 선택하세요 (Top 20 한정)",
@@ -105,32 +103,61 @@ else:
     if selected_users:
         filtered_df = df[df['nickname'].isin(selected_users)]
         
-        st.subheader("📈 경험치 그래프")
-        show_growth_only = st.checkbox("🏁 시작점을 0으로 맞춰서 '순수 증가량'만 보기 (추천)", value=True)
+        # -------------------------------------------------------
+        # [수정됨] 3가지 보기 모드 그래프 로직
+        # -------------------------------------------------------
+        st.subheader("📈 경험치 경쟁 현황")
+        
+        view_mode = st.radio(
+            "보고 싶은 그래프 종류를 선택하세요:",
+            ("🏆 총 누적 경험치 (절대 순위)", "🔥 기간 내 획득 경험치 (사냥 속도)", "🤏 1등과의 격차 (추격 현황)"),
+            horizontal=True
+        )
 
         plot_df = filtered_df.copy()
 
-        if show_growth_only:
-            plot_df['exp_gained'] = plot_df.groupby('nickname')['exp'].transform(lambda x: x - x.min())
-            y_axis = 'exp_gained'
-            y_title = '기간 내 획득 경험치 (누적)'
+        # 모드별 데이터 변환
+        if "기간 내 획득" in view_mode:
+            # 사냥 속도 모드: 0부터 시작
+            plot_df['value'] = plot_df.groupby('nickname')['exp'].transform(lambda x: x - x.min())
+            y_title = '기간 내 획득 경험치 (+)'
+            title_text = '누가 가장 열심히 사냥 중인가? (획득량)'
+            
+        elif "1등과의 격차" in view_mode:
+            # 추격 모드: 1등을 0으로 두고 격차 계산
+            max_exp_per_time = plot_df.groupby('timestamp')['exp'].transform('max')
+            plot_df['value'] = plot_df['exp'] - max_exp_per_time
+            y_title = '1등과의 경험치 차이'
+            title_text = '1등을 얼마나 따라잡았는가? (격차)'
+            
         else:
-            y_axis = 'exp'
+            # 절대 순위 모드
+            plot_df['value'] = plot_df['exp']
             y_title = '총 경험치'
+            title_text = 'Top 랭커 절대 순위 변동'
 
+        # 그래프 그리기
         fig = px.line(
             plot_df, 
             x='timestamp', 
-            y=y_axis, 
+            y='value', 
             color='nickname',
             markers=True,
-            title=f'Top 랭커 경쟁 현황 ({y_title})',
+            title=title_text,
             hover_data=['level', 'world', 'exp']
         )
+        
         fig.update_layout(yaxis_title=y_title)
+        
+        # 격차 모드일 때는 0이 맨 위에 오도록 축 반전
+        if "1등과의 격차" in view_mode:
+            fig.update_yaxes(autorange="reversed")
+
         st.plotly_chart(fig, use_container_width=True)
         
+        # 4. 상세 표
         with st.expander("상세 데이터 표 보기"):
             st.dataframe(filtered_df.sort_values(by='timestamp', ascending=False))
+            
     else:
         st.info("왼쪽 사이드바에서 유저를 선택해주세요.")
