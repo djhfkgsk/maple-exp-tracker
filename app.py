@@ -95,34 +95,39 @@ st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여�
 if df.empty:
     st.warning("아직 수집된 데이터가 없습니다.")
 else:
-    # 1. 최신 데이터 기준 전체 랭킹 산정 (순위 매기기용)
+    # 1. 최신 데이터 기준 전체 랭킹 산정
     latest_time = df['timestamp'].max()
-    
-    # 전체 인원을 total_exp로 정렬
     latest_ranking_df = df[df['timestamp'] == latest_time].sort_values(by='total_exp', ascending=False)
     
-    # [핵심] 순위 정보 매핑 (닉네임 -> 현재 순위)
-    # enumerate는 0부터 시작하므로 +1 해서 1등부터 시작
+    # 순위 정보 매핑 (닉네임 -> 현재 순위)
     rank_map = {row['nickname']: i+1 for i, row in enumerate(latest_ranking_df.to_dict('records'))}
     
-    # Top 15명 추출
-    top_15_df = latest_ranking_df.head(15)
-    top_15_nicknames = top_15_df['nickname'].tolist()
+    # Top 20명 추출
+    top_20_df = latest_ranking_df.head(20)
+    top_20_nicknames = top_20_df['nickname'].tolist()
     
-    st.subheader(f"🏆 현재 Top 15 랭커 현황")
+    st.subheader(f"🏆 현재 Top 20 랭커 현황")
     
+    # 2. 사이드바 검색 옵션
     st.sidebar.header("검색 옵션")
+    
+    # [수정됨] 닉네임을 '1위 닉네임' 형태로 바꿔서 보여주는 함수
+    def format_func(nickname):
+        rank = rank_map.get(nickname, 999)
+        return f"{rank}위 {nickname}"
+
+    # format_func 옵션 추가
     selected_users = st.sidebar.multiselect(
-        "확인할 유저를 선택하세요 (Top 15 한정)",
-        top_15_nicknames, 
-        default=top_15_nicknames[:15]
+        "확인할 유저를 선택하세요 (Top 20 한정)",
+        top_20_nicknames, 
+        default=top_20_nicknames[:20],
+        format_func=format_func  # <--- 화면에 보일 때만 순위를 붙여서 보여줌
     )
 
     if selected_users:
         user_filtered_df = df[df['nickname'].isin(selected_users)].copy()
         
-        # [핵심] 닉네임을 '1위 닉네임' 형태로 변경
-        # 이렇게 하면 그래프 범례(Legend)에 순위가 같이 나옵니다.
+        # 그래프 범례용 이름 생성
         user_filtered_df['display_name'] = user_filtered_df['nickname'].apply(
             lambda x: f"{rank_map.get(x, 999)}위 {x}"
         )
@@ -182,19 +187,18 @@ else:
                 y_title = '총 누적 경험치'
                 title_text = 'Top 랭커 절대 순위'
 
-            # 범례 정렬을 위해 순서 리스트 생성 (1위, 2위, 3위... 순서대로)
-            # 이걸 안 하면 1위, 10위, 11위... 2위 순서로 나옴 (문자열 정렬 때문)
+            # 범례 순서 정렬 (1위부터 차례대로)
             sorted_legends = sorted(plot_df['display_name'].unique(), key=lambda x: int(x.split('위')[0]))
 
             fig = px.line(
                 plot_df, 
                 x='timestamp', 
                 y='value', 
-                color='display_name', # [변경] 닉네임 대신 순위 포함된 이름 사용
+                color='display_name',
                 markers=True,
                 title=title_text,
                 hover_data=['level', 'world', 'exp'],
-                category_orders={"display_name": sorted_legends} # [핵심] 범례 순서 강제 고정
+                category_orders={"display_name": sorted_legends}
             )
             
             fig.update_layout(yaxis_title=y_title)
