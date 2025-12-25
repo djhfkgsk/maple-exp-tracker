@@ -30,7 +30,7 @@ jobs:
       env:
         NEXON_API_KEY: ${{ secrets.NEXON_API_KEY }}
       run: |
-        python quick.py
+        python maple_exp_tracker.py
 
     - name: 결과 파일 저장 (Commit & Push)
       run: |
