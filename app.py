@@ -17,8 +17,9 @@ GITHUB_REPO = "maple-exp-tracker"
 WORKFLOW_FILE = "main.yml" 
 
 # ==========================================
-# [핵심] 경험치 테이블 (누적 경험치 계산용)
+# [핵심] 경험치 테이블 (누적 및 퍼센트 계산용)
 # ==========================================
+# 1. 해당 레벨 '0%' 달성 시점의 누적 경험치 (Base EXP)
 LEVEL_BASE_EXP = {
     275: 57545329506825,
     276: 68922440762335,
@@ -27,6 +28,17 @@ LEVEL_BASE_EXP = {
     279: 110346502843647,
     280: 127003731431838,
     281: 143660960021029
+}
+
+# 2. 다음 레벨업에 필요한 경험치 통 (Required EXP) - 퍼센트 계산용
+# (제공해주신 증가율 데이터를 바탕으로 매핑)
+LEVEL_REQ_EXP = {
+    275: 11377111255510,
+    276: 12514822381061,
+    277: 13766304619167,
+    278: 15142935081083,
+    279: 16657228589191,
+    280: 18322951448110, # (추정치) 280구간
 }
 
 # 제목
@@ -54,12 +66,22 @@ def load_data():
         df = pd.read_csv(url)
         df['timestamp'] = pd.to_datetime(df['timestamp']) + timedelta(hours=9) # KST 변환
         
-        # 총 누적 경험치 계산
-        def calculate_total_exp(row):
+        # 데이터 전처리 함수
+        def process_user_data(row):
             base = LEVEL_BASE_EXP.get(row['level'], 0)
-            return base + row['exp']
+            req = LEVEL_REQ_EXP.get(row['level'], 1) # 0으로 나누기 방지
+            
+            total_exp = base + row['exp']
+            percent = (row['exp'] / req) * 100
+            
+            return pd.Series([total_exp, percent])
         
-        df['total_exp'] = df.apply(calculate_total_exp, axis=1)
+        # total_exp와 exp_percent 컬럼 동시 생성
+        df[['total_exp', 'exp_percent']] = df.apply(process_user_data, axis=1)
+        
+        # 퍼센트 소수점 정리 (보기 좋게)
+        df['exp_percent_str'] = df['exp_percent'].map('{:.3f}%'.format)
+        
         return df
     except:
         return pd.DataFrame()
@@ -95,11 +117,10 @@ st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여�
 if df.empty:
     st.warning("아직 수집된 데이터가 없습니다.")
 else:
-    # 1. 최신 데이터 기준 전체 랭킹 산정
+    # 1. 랭킹 산정 및 순위 매핑
     latest_time = df['timestamp'].max()
     latest_ranking_df = df[df['timestamp'] == latest_time].sort_values(by='total_exp', ascending=False)
     
-    # 순위 정보 매핑 (닉네임 -> 현재 순위)
     rank_map = {row['nickname']: i+1 for i, row in enumerate(latest_ranking_df.to_dict('records'))}
     
     # Top 15명 추출
@@ -111,25 +132,26 @@ else:
     # 2. 사이드바 검색 옵션
     st.sidebar.header("검색 옵션")
     
-    # [수정됨] 닉네임을 '1위 닉네임' 형태로 바꿔서 보여주는 함수
     def format_func(nickname):
         rank = rank_map.get(nickname, 999)
         return f"{rank}위 {nickname}"
 
-    # format_func 옵션 추가
     selected_users = st.sidebar.multiselect(
         "확인할 유저를 선택하세요 (Top 15 한정)",
         top_15_nicknames, 
         default=top_15_nicknames[:15],
-        format_func=format_func  # <--- 화면에 보일 때만 순위를 붙여서 보여줌
+        format_func=format_func
     )
 
     if selected_users:
         user_filtered_df = df[df['nickname'].isin(selected_users)].copy()
         
-        # 그래프 범례용 이름 생성
-        user_filtered_df['display_name'] = user_filtered_df['nickname'].apply(
-            lambda x: f"{rank_map.get(x, 999)}위 {x}"
+        # 그래프 범례용 이름 생성 (순위 + 닉네임 + 현재%)
+        # 최신 퍼센트를 이름 옆에 붙여주면 더 직관적임
+        latest_stats = user_filtered_df[user_filtered_df['timestamp'] == latest_time].set_index('nickname')['exp_percent_str']
+        
+        user_filtered_df['display_name'] = user_filtered_df.apply(
+            lambda x: f"{rank_map.get(x['nickname'], 999)}위 {x['nickname']}", axis=1
         )
 
         st.divider()
@@ -142,13 +164,18 @@ else:
         
         st.subheader("⏳ 분석 구간 설정")
         
-        start_time, end_time = st.slider(
-            "분석하고 싶은 시간대를 선택하세요:",
-            min_value=min_time.to_pydatetime(),
-            max_value=max_time.to_pydatetime(),
-            value=(min_time.to_pydatetime(), max_time.to_pydatetime()),
-            format="MM/DD HH:mm"
-        )
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            start_time, end_time = st.slider(
+                "분석하고 싶은 시간대를 선택하세요:",
+                min_value=min_time.to_pydatetime(),
+                max_value=max_time.to_pydatetime(),
+                value=(min_time.to_pydatetime(), max_time.to_pydatetime()),
+                format="MM/DD HH:mm",
+                label_visibility="collapsed"
+            )
+        with col2:
+            st.caption(f"선택 구간: {start_time.strftime('%m/%d %H:%M')} ~ {end_time.strftime('%m/%d %H:%M')}")
         
         final_df = user_filtered_df[
             (user_filtered_df['timestamp'] >= start_time) & 
@@ -158,6 +185,51 @@ else:
         if final_df.empty:
             st.warning("선택된 구간에 데이터가 없습니다.")
         else:
+            # -------------------------------------------------------
+            # [신규 기능] 사냥 효율 분석기 (Growth Stats)
+            # -------------------------------------------------------
+            st.subheader("📊 사냥 효율 분석 (선택 구간 기준)")
+            
+            # 구간 내 변동량 계산
+            growth_stats = []
+            for nick in selected_users:
+                user_data = final_df[final_df['nickname'] == nick].sort_values('timestamp')
+                if len(user_data) < 2:
+                    continue
+                    
+                start_row = user_data.iloc[0]
+                end_row = user_data.iloc[-1]
+                
+                # 시간 차이 (시간 단위)
+                hours = (end_row['timestamp'] - start_row['timestamp']).total_seconds() / 3600
+                if hours == 0: hours = 0.001 # 0 나누기 방지
+                
+                # 경험치 획득량
+                gained_exp = end_row['total_exp'] - start_row['total_exp']
+                
+                # 시간당 획득량
+                exp_per_hour = gained_exp / hours
+                
+                # 시간당 퍼센트 (%/hr) - 현재 레벨 통 기준
+                # 주의: 레벨업을 했더라도 '현재 레벨' 기준으로 환산해서 보여주는 게 일반적임
+                current_req = LEVEL_REQ_EXP.get(end_row['level'], 1)
+                percent_per_hour = (exp_per_hour / current_req) * 100
+                
+                growth_stats.append({
+                    "랭킹": rank_map.get(nick, 999),
+                    "닉네임": nick,
+                    "레벨": f"{end_row['level']} ({end_row['exp_percent_str']})",
+                    "구간 획득 경험치": f"{gained_exp:,}",
+                    "🔥 시간당 경험치": f"{int(exp_per_hour):,}/hr",
+                    "⚡ 시간당 속도": f"+{percent_per_hour:.3f}%/hr" # 핵심 지표
+                })
+            
+            if growth_stats:
+                stats_df = pd.DataFrame(growth_stats).sort_values("랭킹")
+                st.dataframe(stats_df, hide_index=True, use_container_width=True)
+            else:
+                st.info("효율을 계산하기에 데이터가 충분하지 않습니다. (최소 2개 이상의 시점 필요)")
+
             # -------------------------------------------------------
             # 그래프 로직
             # -------------------------------------------------------
@@ -187,7 +259,6 @@ else:
                 y_title = '총 누적 경험치'
                 title_text = 'Top 랭커 절대 순위'
 
-            # 범례 순서 정렬 (1위부터 차례대로)
             sorted_legends = sorted(plot_df['display_name'].unique(), key=lambda x: int(x.split('위')[0]))
 
             fig = px.line(
@@ -197,7 +268,14 @@ else:
                 color='display_name',
                 markers=True,
                 title=title_text,
-                hover_data=['level', 'world', 'exp'],
+                # 툴팁에 퍼센트 정보 추가
+                hover_data={
+                    'timestamp': '|%m-%d %H:%M',
+                    'level': True,
+                    'exp_percent_str': True, # 퍼센트 표시
+                    'value': True,
+                    'display_name': False
+                },
                 category_orders={"display_name": sorted_legends}
             )
             
@@ -209,7 +287,9 @@ else:
             st.plotly_chart(fig, use_container_width=True)
             
             with st.expander("상세 데이터 표 보기"):
-                st.dataframe(final_df.sort_values(by='timestamp', ascending=False))
+                # 표에도 보기 좋게 컬럼 정리
+                display_cols = ['timestamp', 'nickname', 'level', 'exp_percent_str', 'exp', 'total_exp']
+                st.dataframe(final_df[display_cols].sort_values(by='timestamp', ascending=False), use_container_width=True)
             
     else:
         st.info("왼쪽 사이드바에서 유저를 선택해주세요.")
