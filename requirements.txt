@@ -1,5 +1,6 @@
-requests
 pandas
-streamlit
+requests
 plotly
-openpyxl
+streamlit
+aiohttp
+asyncio
