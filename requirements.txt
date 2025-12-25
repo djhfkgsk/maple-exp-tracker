@@ -4,3 +4,4 @@ plotly
 streamlit
 aiohttp
 asyncio
+pytz

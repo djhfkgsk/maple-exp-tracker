@@ -1,105 +1,180 @@
+import requests
+import csv
 import os
-import pandas as pd
-import asyncio
-import aiohttp
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
+from urllib.parse import quote
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import pytz # timezone 처리를 위해 필요
 
 # ==========================================
-# [설정] API 키 및 유저 목록
+# 1. 환경 설정
 # ==========================================
-API_KEY = os.environ.get('NEXON_API_KEY')
+API_KEY = os.environ.get("NEXON_API_KEY")
+
 HEADERS = {
     "x-nxopen-api-key": API_KEY,
     "accept": "application/json"
 }
 
-# 추적할 닉네임 리스트 (200명 리스트 꼭 채워넣으세요!)
-NICKNAMES = [
-    "캡틴김지명", "춘123자", "뉴비챌붕잉", "진캐12움", "구떼온",
-    "후닝꽁꽁", "RetroArk", "제는맘", "욱브은월", "레거시",
-    "챌섭제논싫어", "슐넌", "헌터램지", "루미너스zxcz", "크로아마세",
-    "휴양림리움", "뽀꿈", "아델", "호영", "메르세데스"
-    # ... 여기에 나머지 닉네임 추가 ...
-]
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FILE_HISTORY = os.path.join(BASE_DIR, "exp_history.csv") # 소문자 통일
 
-async def fetch_user_data(session, nickname):
-    # 1. OCID 조회
-    ocid_url = "https://open.api.nexon.com/maplestory/v1/id"
-    try:
-        async with session.get(ocid_url, params={"character_name": nickname}, headers=HEADERS) as resp:
-            if resp.status != 200:
-                print(f"❌ {nickname}: OCID 조회 실패 (Code: {resp.status})")
-                return None
-            data = await resp.json()
-            ocid = data.get('ocid')
-    except Exception as e:
-        print(f"❌ {nickname}: OCID 에러 - {e}")
-        return None
+MAX_WORKERS = 20 # 서버 부하 방지를 위해 조금 줄임
+RANKER_LIMIT_PER_WORLD = 50
+TARGET_WORLDS = ["챌린저스", "챌린저스2", "챌린저스3", "챌린저스4"]
 
-    if not ocid:
-        return None
+# URL 설정
+URL_NEXON_RANKING = "https://open.api.nexon.com/maplestory/v1/ranking/overall"
+URL_NEXON_OCID = "https://open.api.nexon.com/maplestory/v1/id"
+URL_NEXON_BASIC = "https://open.api.nexon.com/maplestory/v1/character/basic"
 
-    # 2. 캐릭터 정보 조회 (날짜 파라미터 삭제 -> 최신 정보 요청)
-    info_url = "https://open.api.nexon.com/maplestory/v1/character/basic"
+# ==========================================
+# 2. 유틸리티 함수
+# ==========================================
+def get_safe_ranking_date():
+    """
+    랭킹 정보 조회용 날짜 구하기 (KST 기준)
+    넥슨 랭킹은 보통 오전 8시 30분에 갱신됨.
+    따라서 00:00 ~ 08:30 사이에는 '어제' 랭킹도 없으므로 '그저께'를 조회해야 함.
+    """
+    kst = pytz.timezone('Asia/Seoul')
+    now_kst = datetime.now(kst)
     
-    try:
-        # params에서 "date"를 제거했습니다.
-        async with session.get(info_url, params={"ocid": ocid}, headers=HEADERS) as resp:
-            if resp.status != 200:
-                print(f"❌ {nickname}: 정보 조회 실패 (Code: {resp.status})")
-                # 만약 날짜 필수라고 에러가 나면, 넥슨 API 특성상 어쩔 수 없이 '어제'를 넣어야 합니다.
-                # 하지만 사용자님 의견대로 일단 빼고 시도합니다.
-                return None
-            
-            char_data = await resp.json()
-            
-            return {
-                # UTC 시간 저장 -> app.py에서 +9시간 보정
-                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
-                "nickname": nickname,
-                "world": char_data.get("character_world_name", "Unknown"),
-                "level": char_data.get("character_level", 0),
-                "exp": char_data.get("character_exp", 0)
-            }
-    except Exception as e:
-        print(f"❌ {nickname}: 정보 조회 에러 - {e}")
-        return None
-
-async def main():
-    file_name = "exp_history.csv" # 소문자 유지
-    
-    if os.path.exists(file_name):
-        df_history = pd.read_csv(file_name)
+    # 오전 9시 이전이면 안전하게 2일 전 랭킹을 조회
+    if now_kst.hour < 9:
+        return (now_kst - timedelta(days=2)).strftime("%Y-%m-%d")
     else:
-        df_history = pd.DataFrame(columns=["timestamp", "nickname", "world", "level", "exp"])
+        return (now_kst - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    print(f"🚀 {len(NICKNAMES)}명의 최신 데이터 수집 시작...")
+# ==========================================
+# 3. Worker 함수들
+# ==========================================
+def fetch_ocid_worker(row):
+    try:
+        # 닉네임에 특수문자가 있을 수 있으므로 quote 사용
+        url = f"{URL_NEXON_OCID}?character_name={quote(row['nickname'])}"
+        response = requests.get(url, headers=HEADERS, timeout=5)
+        if response.status_code == 200:
+            return {
+                "nickname": row['nickname'],
+                "ocid": response.json().get("ocid"),
+                "world": row['world'],
+                "level": row['level']
+            }
+    except:
+        pass
+    return None
+
+def fetch_exp_worker(user):
+    try:
+        # [핵심] date 파라미터 없이 요청 -> 실시간 최신 정보 획득
+        response = requests.get(URL_NEXON_BASIC, headers=HEADERS, params={"ocid": user['ocid']}, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            user['current_level'] = int(data.get("character_level", 0))
+            user['current_exp'] = int(data.get("character_exp", 0))
+            return user
+        elif response.status_code == 400:
+            # 혹시라도 날짜 필수라고 에러나면 로그 출력
+            print(f"⚠️ {user['nickname']} 400 Error (Date Required?)")
+    except:
+        pass
+    return None
+
+# ==========================================
+# 4. 메인 로직
+# ==========================================
+def step1_fetch_rankings():
+    """각 월드별 상위 랭커 명단 수집"""
+    ranking_date = get_safe_ranking_date()
+    print(f"1. 랭킹 시드 수집 중... (기준일: {ranking_date})")
     
+    all_rankers = []
+    
+    for world in TARGET_WORLDS:
+        try:
+            # 랭킹 정보 요청
+            params = {"date": ranking_date, "world_name": world, "page": 1}
+            res = requests.get(URL_NEXON_RANKING, headers=HEADERS, params=params, timeout=10)
+            
+            if res.status_code == 200:
+                data = res.json().get("ranking", [])
+                # 설정한 인원수만큼만 가져오기
+                for char in data[:RANKER_LIMIT_PER_WORLD]:
+                    all_rankers.append(char)
+                print(f"   - {world}: {len(data[:RANKER_LIMIT_PER_WORLD])}명 확보")
+            else:
+                print(f"   - {world}: 조회 실패 (Code {res.status_code})")
+        except Exception as e:
+            print(f"   - {world}: 에러 발생 ({e})")
+            
+    return all_rankers
+
+def main():
+    # API 키 확인
     if not API_KEY:
-        print("🚨 API KEY가 없습니다! Settings > Secrets를 확인하세요.")
+        print("🚨 API Key가 없습니다. GitHub Secrets를 확인하세요.")
         return
 
-    sem = asyncio.Semaphore(10)
+    # 1. 랭킹 데이터 확보
+    raw_rankers = step1_fetch_rankings()
+    if not raw_rankers:
+        print("❌ 랭킹 데이터를 가져오지 못했습니다. (점검 중이거나 날짜 문제)")
+        return
+    print(f"-> 총 {len(raw_rankers)}명의 랭커를 추적합니다.")
 
-    async def fetch_with_sem(session, nickname):
-        async with sem:
-            return await fetch_user_data(session, nickname)
-
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_with_sem(session, name) for name in NICKNAMES]
-        results = await asyncio.gather(*tasks)
-
-    valid_data = [r for r in results if r is not None]
+    # 2. OCID 변환
+    print("2. OCID 변환 중...")
+    users_with_ocid = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(fetch_ocid_worker, {'nickname': r['character_name'], 'world': r['world_name'], 'level': r['character_level']}) for r in raw_rankers]
+        for future in as_completed(futures):
+            res = future.result()
+            if res: users_with_ocid.append(res)
     
-    print(f"✅ 수집 완료: {len(valid_data)}/{len(NICKNAMES)} 성공")
+    print(f"-> {len(users_with_ocid)}명 OCID 확보 완료")
 
-    if valid_data:
-        new_df = pd.DataFrame(valid_data)
-        updated_df = pd.concat([df_history, new_df], ignore_index=True)
-        updated_df.to_csv(file_name, index=False, encoding='utf-8-sig')
-        print("💾 데이터 저장 완료!")
+    # 3. 실시간 경험치 조회
+    print("3. 실시간 경험치 조회 중...")
+    current_status = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(fetch_exp_worker, u) for u in users_with_ocid]
+        for future in as_completed(futures):
+            res = future.result()
+            if res and 'current_exp' in res:
+                current_status.append(res)
+    
+    # 4. 데이터 저장
+    if current_status:
+        print(f"4. 데이터 {len(current_status)}건 저장 중...")
+        
+        file_exists = os.path.isfile(FILE_HISTORY)
+        # UTC 시간으로 저장 (app.py에서 +9 보정하므로)
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        try:
+            with open(FILE_HISTORY, 'a', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                
+                # 파일이 없으면 헤더 작성
+                if not file_exists:
+                    writer.writerow(["timestamp", "nickname", "world", "level", "exp"])
+                    
+                for user in current_status:
+                    writer.writerow([
+                        now_str,
+                        user['nickname'],
+                        user['world'],
+                        user['current_level'],
+                        user['current_exp']
+                    ])
+            print("💾 exp_history.csv 저장 완료!")
+        except Exception as e:
+            print(f"❌ 파일 저장 실패: {e}")
     else:
-        print("⚠️ 저장할 새로운 데이터가 없습니다.")
+        print("⚠️ 저장할 데이터가 없습니다.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
