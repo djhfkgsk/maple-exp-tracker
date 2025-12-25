@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import os
 import requests
 import json
 from datetime import datetime, timedelta
@@ -17,9 +16,8 @@ GITHUB_REPO = "maple-exp-tracker"
 WORKFLOW_FILE = "main.yml" 
 
 # ==========================================
-# [핵심] 경험치 테이블 (누적 및 퍼센트 계산용)
+# [핵심] 경험치 테이블
 # ==========================================
-# 1. 해당 레벨 '0%' 달성 시점의 누적 경험치 (Base EXP)
 LEVEL_BASE_EXP = {
     275: 57545329506825,
     276: 68922440762335,
@@ -30,15 +28,13 @@ LEVEL_BASE_EXP = {
     281: 143660960021029
 }
 
-# 2. 다음 레벨업에 필요한 경험치 통 (Required EXP) - 퍼센트 계산용
-# (제공해주신 증가율 데이터를 바탕으로 매핑)
 LEVEL_REQ_EXP = {
     275: 11377111255510,
     276: 12514822381061,
     277: 13766304619167,
     278: 15142935081083,
     279: 16657228589191,
-    280: 18322951448110, # (추정치) 280구간
+    280: 18322951448110,
 }
 
 # 제목
@@ -66,20 +62,14 @@ def load_data():
         df = pd.read_csv(url)
         df['timestamp'] = pd.to_datetime(df['timestamp']) + timedelta(hours=9) # KST 변환
         
-        # 데이터 전처리 함수
         def process_user_data(row):
             base = LEVEL_BASE_EXP.get(row['level'], 0)
-            req = LEVEL_REQ_EXP.get(row['level'], 1) # 0으로 나누기 방지
-            
+            req = LEVEL_REQ_EXP.get(row['level'], 1)
             total_exp = base + row['exp']
             percent = (row['exp'] / req) * 100
-            
             return pd.Series([total_exp, percent])
         
-        # total_exp와 exp_percent 컬럼 동시 생성
         df[['total_exp', 'exp_percent']] = df.apply(process_user_data, axis=1)
-        
-        # 퍼센트 소수점 정리 (보기 좋게)
         df['exp_percent_str'] = df['exp_percent'].map('{:.3f}%'.format)
         
         return df
@@ -117,21 +107,21 @@ st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여�
 if df.empty:
     st.warning("아직 수집된 데이터가 없습니다.")
 else:
-    # 1. 랭킹 산정 및 순위 매핑
+    # 1. 랭킹 산정
     latest_time = df['timestamp'].max()
     latest_ranking_df = df[df['timestamp'] == latest_time].sort_values(by='total_exp', ascending=False)
     
+    # 닉네임 -> 순위 매핑
     rank_map = {row['nickname']: i+1 for i, row in enumerate(latest_ranking_df.to_dict('records'))}
     
-    # Top 15명 추출
+    # Top 15 리스트
     top_15_df = latest_ranking_df.head(15)
     top_15_nicknames = top_15_df['nickname'].tolist()
     
     st.subheader(f"🏆 현재 Top 15 랭커 현황")
     
-    # 2. 사이드바 검색 옵션
+    # 사이드바
     st.sidebar.header("검색 옵션")
-    
     def format_func(nickname):
         rank = rank_map.get(nickname, 999)
         return f"{rank}위 {nickname}"
@@ -144,12 +134,8 @@ else:
     )
 
     if selected_users:
+        # 닉네임 필터링 (그래프용)
         user_filtered_df = df[df['nickname'].isin(selected_users)].copy()
-        
-        # 그래프 범례용 이름 생성 (순위 + 닉네임 + 현재%)
-        # 최신 퍼센트를 이름 옆에 붙여주면 더 직관적임
-        latest_stats = user_filtered_df[user_filtered_df['timestamp'] == latest_time].set_index('nickname')['exp_percent_str']
-        
         user_filtered_df['display_name'] = user_filtered_df.apply(
             lambda x: f"{rank_map.get(x['nickname'], 999)}위 {x['nickname']}", axis=1
         )
@@ -159,10 +145,12 @@ else:
         # -------------------------------------------------------
         # 시간 구간 슬라이더
         # -------------------------------------------------------
+        st.subheader("⏳ 분석 구간 설정")
+        
+        # 전체 데이터 기준 min/max (선택된 유저 기준이 아님, 그래야 전체 비교 가능)
+        # 하지만 슬라이더 범위는 편의상 선택된 유저 기준으로 잡음
         min_time = user_filtered_df['timestamp'].min()
         max_time = user_filtered_df['timestamp'].max()
-        
-        st.subheader("⏳ 분석 구간 설정")
         
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -177,67 +165,148 @@ else:
         with col2:
             st.caption(f"선택 구간: {start_time.strftime('%m/%d %H:%M')} ~ {end_time.strftime('%m/%d %H:%M')}")
         
+        # -------------------------------------------------------
+        # [업그레이드] 전체 Top 15 유저 백그라운드 속도 계산
+        # -------------------------------------------------------
+        # 선택된 유저뿐만 아니라, Top 15 전체의 속도를 구해야 '바로 윗등수'와 비교 가능
+        
+        # 1. 구간 데이터 필터링 (Top 15 전체)
+        top_15_all_data = df[
+            (df['nickname'].isin(top_15_nicknames)) &
+            (df['timestamp'] >= start_time) &
+            (df['timestamp'] <= end_time)
+        ].copy()
+
+        # 2. 유저별 속도 및 현재 상태 계산
+        user_metrics = {} # {닉네임: {속도, 현재경험치, 랭킹}}
+        
+        for nick in top_15_nicknames:
+            u_data = top_15_all_data[top_15_all_data['nickname'] == nick].sort_values('timestamp')
+            if len(u_data) < 2:
+                continue
+            
+            s_row = u_data.iloc[0]
+            e_row = u_data.iloc[-1]
+            
+            hours = (e_row['timestamp'] - s_row['timestamp']).total_seconds() / 3600
+            if hours == 0: hours = 0.001
+            
+            exp_diff = e_row['total_exp'] - s_row['total_exp']
+            speed = exp_diff / hours
+            
+            user_metrics[nick] = {
+                'nickname': nick,
+                'rank': rank_map.get(nick, 999),
+                'current_total_exp': e_row['total_exp'],
+                'speed': speed,
+                'level_info': f"{e_row['level']} ({e_row['exp_percent_str']})",
+                'gained_exp': exp_diff
+            }
+
+        # 3. 순위대로 정렬 (1위 ~ 15위)
+        sorted_metrics = sorted(user_metrics.values(), key=lambda x: x['rank'])
+        
+        # 4. 역전 시간 계산 (바로 윗 등수와 비교)
+        overtake_info = {} # {닉네임: "2시간 30분"}
+        
+        for i in range(1, len(sorted_metrics)):
+            me = sorted_metrics[i]      # 현재 유저 (예: 10등)
+            target = sorted_metrics[i-1] # 바로 윗 유저 (예: 9등)
+            
+            gap = target['current_total_exp'] - me['current_total_exp']
+            speed_gap = me['speed'] - target['speed'] # 내가 얼마나 더 빠른가?
+            
+            msg = "-"
+            target_name = f"{target['rank']}위 {target['nickname']}"
+            
+            if gap <= 0:
+                msg = "이미 역전함"
+            elif speed_gap <= 0:
+                msg = "추월 불가 (느림)"
+            else:
+                # 역전 가능
+                hours_needed = gap / speed_gap
+                
+                days = int(hours_needed // 24)
+                rem_hours = int(hours_needed % 24)
+                mins = int((hours_needed * 60) % 60)
+                
+                time_str = []
+                if days > 0: time_str.append(f"{days}일")
+                if rem_hours > 0: time_str.append(f"{rem_hours}시간")
+                time_str.append(f"{mins}분")
+                
+                msg = " ".join(time_str) + " 후"
+            
+            overtake_info[me['nickname']] = {
+                "target": target_name,
+                "time": msg,
+                "gap": gap
+            }
+            
+        # 1등은 목표가 없음
+        if sorted_metrics:
+            overtake_info[sorted_metrics[0]['nickname']] = {"target": "-", "time": "독주 중 👑", "gap": 0}
+
+        # -------------------------------------------------------
+        # 표 만들기 (선택된 유저만 표시)
+        # -------------------------------------------------------
+        st.subheader("📊 사냥 효율 및 추격 현황표")
+        
+        display_rows = []
+        for nick in selected_users:
+            if nick not in user_metrics:
+                continue
+                
+            u = user_metrics[nick]
+            o_info = overtake_info.get(nick, {"target": "?", "time": "?", "gap": 0})
+            
+            # 속도 (%/hr)
+            current_req = LEVEL_REQ_EXP.get(int(u['level_info'].split()[0]), 1)
+            percent_speed = (u['speed'] / current_req) * 100
+            
+            display_rows.append({
+                "순위": u['rank'],
+                "닉네임": nick,
+                "레벨 (현재%)": u['level_info'],
+                "획득 경험치": f"{int(u['gained_exp']):,}",
+                "⚡ 속도 (%/hr)": f"+{percent_speed:.3f}%",
+                "🎯 추격 목표": o_info['target'],
+                "⏱️ 역전 예상 시간": o_info['time']
+            })
+            
+        if display_rows:
+            # 순위순 정렬
+            final_table_df = pd.DataFrame(display_rows).sort_values("순위")
+            
+            # 스타일링 (역전 시간 강조)
+            st.dataframe(
+                final_table_df, 
+                hide_index=True, 
+                use_container_width=True,
+                column_config={
+                    "순위": st.column_config.NumberColumn(format="%d위"),
+                    "⏱️ 역전 예상 시간": st.column_config.TextColumn(help="현재 속도 차이로 윗등수를 잡는데 걸리는 시간")
+                }
+            )
+        else:
+            st.info("데이터가 부족하여 계산할 수 없습니다.")
+
+        # -------------------------------------------------------
+        # 그래프 그리기 (기존 로직 유지)
+        # -------------------------------------------------------
+        # 구간 필터링된 데이터 사용
         final_df = user_filtered_df[
             (user_filtered_df['timestamp'] >= start_time) & 
             (user_filtered_df['timestamp'] <= end_time)
         ].copy()
         
-        if final_df.empty:
-            st.warning("선택된 구간에 데이터가 없습니다.")
-        else:
-            # -------------------------------------------------------
-            # [신규 기능] 사냥 효율 분석기 (Growth Stats)
-            # -------------------------------------------------------
-            st.subheader("📊 사냥 효율 분석 (선택 구간 기준)")
-            
-            # 구간 내 변동량 계산
-            growth_stats = []
-            for nick in selected_users:
-                user_data = final_df[final_df['nickname'] == nick].sort_values('timestamp')
-                if len(user_data) < 2:
-                    continue
-                    
-                start_row = user_data.iloc[0]
-                end_row = user_data.iloc[-1]
-                
-                # 시간 차이 (시간 단위)
-                hours = (end_row['timestamp'] - start_row['timestamp']).total_seconds() / 3600
-                if hours == 0: hours = 0.001 # 0 나누기 방지
-                
-                # 경험치 획득량
-                gained_exp = end_row['total_exp'] - start_row['total_exp']
-                
-                # 시간당 획득량
-                exp_per_hour = gained_exp / hours
-                
-                # 시간당 퍼센트 (%/hr) - 현재 레벨 통 기준
-                # 주의: 레벨업을 했더라도 '현재 레벨' 기준으로 환산해서 보여주는 게 일반적임
-                current_req = LEVEL_REQ_EXP.get(end_row['level'], 1)
-                percent_per_hour = (exp_per_hour / current_req) * 100
-                
-                growth_stats.append({
-                    "랭킹": rank_map.get(nick, 999),
-                    "닉네임": nick,
-                    "레벨": f"{end_row['level']} ({end_row['exp_percent_str']})",
-                    "구간 획득 경험치": f"{gained_exp:,}",
-                    "🔥 시간당 경험치": f"{int(exp_per_hour):,}/hr",
-                    "⚡ 시간당 속도": f"+{percent_per_hour:.3f}%/hr" # 핵심 지표
-                })
-            
-            if growth_stats:
-                stats_df = pd.DataFrame(growth_stats).sort_values("랭킹")
-                st.dataframe(stats_df, hide_index=True, use_container_width=True)
-            else:
-                st.info("효율을 계산하기에 데이터가 충분하지 않습니다. (최소 2개 이상의 시점 필요)")
-
-            # -------------------------------------------------------
-            # 그래프 로직
-            # -------------------------------------------------------
-            st.subheader("📈 경험치 경쟁 현황")
+        if not final_df.empty:
+            st.subheader("📈 경험치 경쟁 그래프")
             
             view_mode = st.radio(
-                "보고 싶은 그래프 종류를 선택하세요:",
-                ("🏆 총 누적 경험치 (절대 순위)", "🔥 기간 내 획득 경험치 (사냥 속도)", "🤏 1등과의 격차 (추격 현황)"),
+                "그래프 모드:",
+                ("🏆 총 누적 경험치 (절대 순위)", "🔥 기간 내 획득 경험치 (속도)", "🤏 1등과의 격차 (추격)"),
                 horizontal=True
             )
 
@@ -245,19 +314,17 @@ else:
 
             if "기간 내 획득" in view_mode:
                 plot_df['value'] = plot_df.groupby('nickname')['total_exp'].transform(lambda x: x - x.min())
-                y_title = '선택 구간 내 획득 경험치 (+)'
-                title_text = f'해당 구간 사냥 승자는? ({start_time.strftime("%H:%M")} ~ {end_time.strftime("%H:%M")})'
-                
+                y_title = '구간 획득 경험치 (+)'
+                title_text = f'누가 제일 많이 먹었나? ({start_time.strftime("%H:%M")} ~)'
             elif "1등과의 격차" in view_mode:
                 max_exp_per_time = plot_df.groupby('timestamp')['total_exp'].transform('max')
                 plot_df['value'] = plot_df['total_exp'] - max_exp_per_time
-                y_title = '1등과의 경험치 차이'
-                title_text = '1등을 얼마나 따라잡았는가? (격차)'
-                
+                y_title = '1등과의 차이'
+                title_text = '1등 따라잡기 (격차)'
             else:
                 plot_df['value'] = plot_df['total_exp']
                 y_title = '총 누적 경험치'
-                title_text = 'Top 랭커 절대 순위'
+                title_text = '순위 변동 그래프'
 
             sorted_legends = sorted(plot_df['display_name'].unique(), key=lambda x: int(x.split('위')[0]))
 
@@ -268,28 +335,14 @@ else:
                 color='display_name',
                 markers=True,
                 title=title_text,
-                # 툴팁에 퍼센트 정보 추가
-                hover_data={
-                    'timestamp': '|%m-%d %H:%M',
-                    'level': True,
-                    'exp_percent_str': True, # 퍼센트 표시
-                    'value': True,
-                    'display_name': False
-                },
+                hover_data={'timestamp': '|%m-%d %H:%M', 'level': True, 'exp_percent_str': True, 'value': True, 'display_name': False},
                 category_orders={"display_name": sorted_legends}
             )
-            
             fig.update_layout(yaxis_title=y_title)
-            
             if "1등과의 격차" in view_mode:
                 fig.update_yaxes(autorange="reversed")
-
-            st.plotly_chart(fig, use_container_width=True)
             
-            with st.expander("상세 데이터 표 보기"):
-                # 표에도 보기 좋게 컬럼 정리
-                display_cols = ['timestamp', 'nickname', 'level', 'exp_percent_str', 'exp', 'total_exp']
-                st.dataframe(final_df[display_cols].sort_values(by='timestamp', ascending=False), use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
             
     else:
         st.info("왼쪽 사이드바에서 유저를 선택해주세요.")
