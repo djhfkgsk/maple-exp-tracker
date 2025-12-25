@@ -246,7 +246,7 @@ else:
             
         # 1등은 목표가 없음
         if sorted_metrics:
-            overtake_info[sorted_metrics[0]['nickname']] = {"target": "-", "time": "이미 1등", "gap": 0}
+            overtake_info[sorted_metrics[0]['nickname']] = {"target": "-", "time": "추격 목표 없음", "gap": 0}
 
         # -------------------------------------------------------
         # 표 만들기 (선택된 유저만 표시)
