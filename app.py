@@ -16,6 +16,20 @@ GITHUB_OWNER = "djhfkgsk"
 GITHUB_REPO = "maple-exp-tracker"
 WORKFLOW_FILE = "main.yml" 
 
+# ==========================================
+# [핵심] 경험치 테이블 (누적 경험치 계산용)
+# 제공해주신 데이터를 바탕으로 '해당 레벨 0%일 때의 누적 경험치'를 매핑했습니다.
+# ==========================================
+LEVEL_BASE_EXP = {
+    275: 57545329506825,   # 276 누적 - 275 필요량
+    276: 68922440762335,   # 제공된 데이터 (275->276 구간 누적)
+    277: 81437263143396,   # 제공된 데이터 (276->277 구간 누적)
+    278: 95203567762563,   # 제공된 데이터 (277->278 구간 누적)
+    279: 110346502843647,  # 제공된 데이터 (278->279 구간 누적)
+    280: 127003731431838,  # 제공된 데이터 (279->280 구간 누적)
+    281: 143660960021029   # (예비용) 추세 반영
+}
+
 # 제목
 st.title("🍁 챌린저스 월드 경험치 추이 대시보드")
 
@@ -30,33 +44,43 @@ def trigger_github_action():
         "Accept": "application/vnd.github.v3+json",
         "Authorization": f"token {st.secrets['GITHUB_TOKEN']}"
     }
-    data = {"ref": "master"} # 혹은 main
+    data = {"ref": "master"}
     
     response = requests.post(url, headers=headers, data=json.dumps(data))
     return response.status_code
 
-# 데이터 로드 함수 (캐시 사용)
-@st.cache_data(ttl=60) # 1분마다 캐시 초기화
+@st.cache_data(ttl=60) 
 def load_data():
-    # 깃허브 Raw Data
     url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/master/exp_history.csv"
     try:
         df = pd.read_csv(url)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # [수정 1] UTC 시간을 한국 시간(KST)으로 변환 (+9시간)
+        df['timestamp'] = pd.to_datetime(df['timestamp']) + timedelta(hours=9)
+        
+        # [수정 2] '총 누적 경험치' 컬럼 생성
+        # 레벨별 베이스 경험치 + 현재 경험치 = 진짜 총 경험치
+        def calculate_total_exp(row):
+            base = LEVEL_BASE_EXP.get(row['level'], 0)
+            return base + row['exp']
+            
+        df['total_exp'] = df.apply(calculate_total_exp, axis=1)
+        
         return df
     except:
         return pd.DataFrame()
 
 df = load_data()
 
-# 쿨타임 계산 및 버튼 표시 로직
+# 쿨타임 및 버튼 로직
 if not df.empty:
     last_update = df['timestamp'].max()
-    current_time = datetime.now()
+    current_time = datetime.now() # 여기는 서버 시간(보통 UTC)이지만, 위에서 df를 KST로 바꿨으므로 맞춰줘야 함
     
-    time_diff = current_time - last_update
+    # Streamlit Cloud 서버는 UTC 기준이므로, 비교를 위해 한국 시간으로 변환
+    current_time_kst = current_time + timedelta(hours=9)
+    time_diff = current_time_kst - last_update
     
-    # 쿨타임 설정: 15분
     if time_diff < timedelta(minutes=15):
         st.sidebar.success(f"✅ 최신 상태입니다.\n({last_update.strftime('%H:%M')} 기준)")
         st.sidebar.info("데이터는 15분마다 갱신 가능합니다.")
@@ -68,13 +92,12 @@ if not df.empty:
                 if code == 204:
                     st.toast("요청 성공! 1~2분 뒤 새로고침 하세요.", icon="🎉")
                 else:
-                    st.error(f"요청 실패 (코드: {code}). 설정(Secrets)을 확인하세요.")
+                    st.error(f"요청 실패 (코드: {code})")
             except Exception as e:
-                st.error(f"에러 발생: {e}")
-                st.info("Streamlit Secrets에 GITHUB_TOKEN이 있는지 확인해주세요.")
+                st.error(f"에러: {e}")
 
 # ==========================================
-# [기능 2] 메인 대시보드 (그래프)
+# [기능 2] 메인 대시보드
 # ==========================================
 
 st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여줍니다.")
@@ -82,17 +105,15 @@ st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여�
 if df.empty:
     st.warning("아직 수집된 데이터가 없습니다.")
 else:
-    # 1. 최신 데이터 기준 랭킹 산정
+    # 랭킹 산정 기준을 'exp'가 아니라 'total_exp'로 변경 (이제 정확함!)
     latest_time = df['timestamp'].max()
-    ranked_df = df[df['timestamp'] == latest_time].sort_values(by=['level', 'exp'], ascending=False)
+    ranked_df = df[df['timestamp'] == latest_time].sort_values(by='total_exp', ascending=False)
     
-    # Top 20명만 자르기
     top_20_df = ranked_df.head(20)
     top_20_nicknames = top_20_df['nickname'].tolist()
     
     st.subheader(f"🏆 현재 Top 20 랭커 현황")
     
-    # 2. 사이드바 검색 옵션
     st.sidebar.header("검색 옵션")
     selected_users = st.sidebar.multiselect(
         "확인할 유저를 선택하세요 (Top 20 한정)",
@@ -103,9 +124,6 @@ else:
     if selected_users:
         filtered_df = df[df['nickname'].isin(selected_users)]
         
-        # -------------------------------------------------------
-        # [수정됨] 3가지 보기 모드 그래프 로직
-        # -------------------------------------------------------
         st.subheader("📈 경험치 경쟁 현황")
         
         view_mode = st.radio(
@@ -116,27 +134,26 @@ else:
 
         plot_df = filtered_df.copy()
 
-        # 모드별 데이터 변환
+        # [중요] 모든 계산을 'total_exp' 기준으로 변경
         if "기간 내 획득" in view_mode:
-            # 사냥 속도 모드: 0부터 시작
-            plot_df['value'] = plot_df.groupby('nickname')['exp'].transform(lambda x: x - x.min())
+            # 기간 내 획득량 (레벨업 해도 그래프가 꺾이지 않고 계속 올라감!)
+            plot_df['value'] = plot_df.groupby('nickname')['total_exp'].transform(lambda x: x - x.min())
             y_title = '기간 내 획득 경험치 (+)'
-            title_text = '누가 가장 열심히 사냥 중인가? (획득량)'
+            title_text = '누가 가장 열심히 사냥 중인가? (순수 획득량)'
             
         elif "1등과의 격차" in view_mode:
-            # 추격 모드: 1등을 0으로 두고 격차 계산
-            max_exp_per_time = plot_df.groupby('timestamp')['exp'].transform('max')
-            plot_df['value'] = plot_df['exp'] - max_exp_per_time
+            # 1등과의 차이
+            max_exp_per_time = plot_df.groupby('timestamp')['total_exp'].transform('max')
+            plot_df['value'] = plot_df['total_exp'] - max_exp_per_time
             y_title = '1등과의 경험치 차이'
             title_text = '1등을 얼마나 따라잡았는가? (격차)'
             
         else:
-            # 절대 순위 모드
-            plot_df['value'] = plot_df['exp']
-            y_title = '총 경험치'
-            title_text = 'Top 랭커 절대 순위 변동'
+            # 절대 순위
+            plot_df['value'] = plot_df['total_exp']
+            y_title = '총 누적 경험치'
+            title_text = 'Top 랭커 절대 순위 (레벨 통합)'
 
-        # 그래프 그리기
         fig = px.line(
             plot_df, 
             x='timestamp', 
@@ -149,14 +166,13 @@ else:
         
         fig.update_layout(yaxis_title=y_title)
         
-        # 격차 모드일 때는 0이 맨 위에 오도록 축 반전
         if "1등과의 격차" in view_mode:
             fig.update_yaxes(autorange="reversed")
 
         st.plotly_chart(fig, use_container_width=True)
         
-        # 4. 상세 표
         with st.expander("상세 데이터 표 보기"):
+            # 표에서도 total_exp 보여주기
             st.dataframe(filtered_df.sort_values(by='timestamp', ascending=False))
             
     else:
