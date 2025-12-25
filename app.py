@@ -10,18 +10,26 @@ st.set_page_config(page_title="메이플 랭커 경험치 추적기", layout="wi
 st.title("🍁 챌린저스 월드 경험치 추이 대시보드")
 st.write("30분 간격으로 수집된 랭커들의 경험치 변화를 보여줍니다.")
 
-# 데이터 불러오기 함수
-@st.cache_data(ttl=600) # 10분마다 새로고침
+# [수정된 load_data 함수]
+@st.cache_data(ttl=600)
 def load_data():
-    if not os.path.exists('exp_history.csv'):
+    # 깃허브의 Raw Data 주소를 직접 입력합니다.
+    # 대소문자(E vs e)가 중요하니, 아래 두 주소 중 웹브라우저에서 열리는 주소를 사용하세요.
+    
+    # 시도 1: 소문자 (사용자님이 말씀하신 이름)
+    url = "https://raw.githubusercontent.com/djhfkgsk/maple-exp-tracker/master/exp_history.csv"
+    
+    # 시도 2: 대문자 (스크린샷에 보이는 이름) - 만약 위 주소가 안 되면 이걸 주석 해제해서 쓰세요
+    # url = "https://raw.githubusercontent.com/djhfkgsk/maple-exp-tracker/master/Exp_history.csv"
+
+    try:
+        df = pd.read_csv(url)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        return df
+    except Exception as e:
+        # 에러가 나면 화면에 출력해서 원인을 확인
+        st.error(f"데이터를 불러오지 못했습니다. URL을 확인해주세요. 에러 내용: {e}")
         return pd.DataFrame()
-    
-    # CSV 읽기
-    df = pd.read_csv('exp_history.csv')
-    
-    # timestamp를 날짜 형식으로 변환
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    return df
 
 df = load_data()
 
