@@ -24,7 +24,7 @@ LEVEL_BASE_EXP = {
     277: 81437263143396,
     278: 95203567762563,
     279: 110346502843647,
-    280: 127003731431838,
+    280: 127003731431838, # 목표 지점 (280레벨 0%)
     281: 143660960021029
 }
 
@@ -36,6 +36,9 @@ LEVEL_REQ_EXP = {
     279: 16657228589191,
     280: 18322951448110,
 }
+
+# 280레벨 달성 기준 총 경험치
+TARGET_EXP_280 = LEVEL_BASE_EXP[280]
 
 # 제목
 st.title("🍁 챌린저스 월드 경험치 추이 대시보드")
@@ -111,10 +114,7 @@ else:
     latest_time = df['timestamp'].max()
     latest_ranking_df = df[df['timestamp'] == latest_time].sort_values(by='total_exp', ascending=False)
     
-    # 닉네임 -> 순위 매핑
     rank_map = {row['nickname']: i+1 for i, row in enumerate(latest_ranking_df.to_dict('records'))}
-    
-    # Top 15 리스트 추출
     top_15_df = latest_ranking_df.head(15)
     top_15_nicknames = top_15_df['nickname'].tolist()
     
@@ -134,17 +134,12 @@ else:
     )
 
     if selected_users:
-        # 닉네임 필터링
         user_filtered_df = df[df['nickname'].isin(selected_users)].copy()
         user_filtered_df['display_name'] = user_filtered_df.apply(
             lambda x: f"{rank_map.get(x['nickname'], 999)}위 {x['nickname']}", axis=1
         )
 
         st.divider()
-        
-        # -------------------------------------------------------
-        # 시간 구간 슬라이더
-        # -------------------------------------------------------
         st.subheader("⏳ 분석 구간 설정")
         
         min_time = user_filtered_df['timestamp'].min()
@@ -164,7 +159,7 @@ else:
             st.caption(f"선택 구간: {start_time.strftime('%m/%d %H:%M')} ~ {end_time.strftime('%m/%d %H:%M')}")
         
         # -------------------------------------------------------
-        # Top 15 전체 백그라운드 속도 계산 & 역전 예측
+        # Top 15 전체 백그라운드 속도 & 280 달성 예측
         # -------------------------------------------------------
         top_15_all_data = df[
             (df['nickname'].isin(top_15_nicknames)) &
@@ -188,13 +183,31 @@ else:
             exp_diff = e_row['total_exp'] - s_row['total_exp']
             speed = exp_diff / hours
             
+            # [신규 기능] 280까지 남은 시간 계산
+            if e_row['total_exp'] >= TARGET_EXP_280:
+                time_to_280_str = "🎉 달성 완료!"
+            elif speed <= 0:
+                time_to_280_str = "측정 불가 (멈춤)"
+            else:
+                remaining = TARGET_EXP_280 - e_row['total_exp']
+                hours_left = remaining / speed
+                
+                days_280 = int(hours_left // 24)
+                rem_hours_280 = int(hours_left % 24)
+                
+                if days_280 > 999: # 너무 오래 걸리면
+                    time_to_280_str = "측정 불가 (너무 느림)"
+                else:
+                    time_to_280_str = f"D-{days_280}일 {rem_hours_280}시간"
+
             user_metrics[nick] = {
                 'nickname': nick,
                 'rank': rank_map.get(nick, 999),
                 'current_total_exp': e_row['total_exp'],
                 'speed': speed,
                 'level_info': f"{e_row['level']} ({e_row['exp_percent_str']})",
-                'gained_exp': exp_diff
+                'gained_exp': exp_diff,
+                'time_to_280': time_to_280_str # 결과 저장
             }
 
         sorted_metrics = sorted(user_metrics.values(), key=lambda x: x['rank'])
@@ -251,8 +264,8 @@ else:
                 "레벨 (현재%)": u['level_info'],
                 "획득 경험치": f"{int(u['gained_exp']):,}",
                 "⚡ 속도 (%/hr)": f"+{percent_speed:.3f}%",
-                "🎯 추격 목표": o_info['target'],
-                "⏱️ 역전 예상 시간": o_info['time']
+                "⏱️ 역전 예상": o_info['time'], # 이름 줄임
+                "🏁 280까지": u['time_to_280'] # [신규 컬럼]
             })
             
         if display_rows:
@@ -263,7 +276,8 @@ else:
                 use_container_width=True,
                 column_config={
                     "순위": st.column_config.NumberColumn(format="%d위"),
-                    "⏱️ 역전 예상 시간": st.column_config.TextColumn(help="현재 속도 차이로 윗등수를 잡는데 걸리는 시간")
+                    "⏱️ 역전 예상": st.column_config.TextColumn(help="바로 윗 등수를 잡는데 걸리는 시간"),
+                    "🏁 280까지": st.column_config.TextColumn(help="현재 속도로 280레벨 달성까지 남은 시간")
                 }
             )
         else:
@@ -287,37 +301,21 @@ else:
             )
 
             plot_df = final_df.copy()
-
-            # ========================================================
-            # [신규 추가] 툴팁용 순간 속도 계산 로직
-            # ========================================================
-            # 1. 계산 편의를 위해 정렬
-            plot_df = plot_df.sort_values(by=['nickname', 'timestamp'])
             
-            # 2. 직전 데이터와의 차이(Delta) 계산
-            # 시간 차이 (시간 단위)
+            # 툴팁용 속도 계산
+            plot_df = plot_df.sort_values(by=['nickname', 'timestamp'])
             plot_df['dt'] = plot_df.groupby('nickname')['timestamp'].diff().dt.total_seconds() / 3600
-            # 경험치 차이
             plot_df['d_exp'] = plot_df.groupby('nickname')['total_exp'].diff()
             
-            # 3. 속도 문자열 포맷팅 함수
             def get_speed_tooltip(row):
-                # 첫 번째 점이거나 시간 차이가 없으면 속도 계산 불가
                 if pd.isna(row['dt']) or row['dt'] <= 0:
                     return "-"
-                
-                # 시간당 획득 경험치
                 speed_per_hour = row['d_exp'] / row['dt']
-                
-                # 레벨별 필요 경험치로 나누어 %/hr 계산
                 req_exp = LEVEL_REQ_EXP.get(row['level'], 1)
                 percent_speed = (speed_per_hour / req_exp) * 100
-                
                 return f"+{percent_speed:.3f}%/hr"
 
-            # 4. 새로운 컬럼 'speed_tooltip' 생성
             plot_df['speed_tooltip'] = plot_df.apply(get_speed_tooltip, axis=1)
-            # ========================================================
 
             if "기간 내 획득" in view_mode:
                 plot_df['value'] = plot_df.groupby('nickname')['total_exp'].transform(lambda x: x - x.min())
@@ -342,27 +340,25 @@ else:
                 color='display_name',
                 markers=True,
                 title=title_text,
-                # [수정됨] 툴팁 설정에 'speed_tooltip' 추가 및 이름 변경
                 hover_data={
                     'timestamp': '|%m-%d %H:%M', 
                     'level': True, 
                     'exp_percent_str': True, 
-                    'speed_tooltip': True, # <--- 이거 추가됨
+                    'speed_tooltip': True,
                     'value': True, 
                     'display_name': False,
-                    'dt': False, # 임시 컬럼 숨김
-                    'd_exp': False # 임시 컬럼 숨김
+                    'dt': False, 
+                    'd_exp': False
                 },
                 category_orders={"display_name": sorted_legends}
             )
             
-            # 툴팁 라벨 이름 예쁘게 변경
             fig.update_traces(
                 hovertemplate="<br>".join([
                     "<b>%{x}</b>",
                     "Level: %{customdata[1]}",
                     "Exp: %{customdata[2]}",
-                    "<b>⚡ 속도: %{customdata[3]}</b>", # <--- 강조 표시
+                    "<b>⚡ 속도: %{customdata[3]}</b>",
                     "Value: %{y}"
                 ])
             )
