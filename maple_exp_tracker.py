@@ -99,7 +99,7 @@ def step1_fetch_rankings():
 def main():
     # 1. 랭킹 데이터 확보
     raw_rankers = step1_fetch_rankings()
-    if notraw_rankers:
+    if not raw_rankers:
         print("데이터 수집 실패")
         return
 
