@@ -55,7 +55,7 @@ else:
     selected_users = st.sidebar.multiselect(
         "확인할 유저를 선택하세요 (Top 20 한정)",
         top_20_nicknames,  # 선택지는 20명뿐
-        default=top_20_nicknames[:5] # 기본적으로 1~5등 5명을 미리 찍어줌
+        default=top_20_nicknames[:20] # 기본적으로 1~5등 5명을 미리 찍어줌
     )
 
     if selected_users:
