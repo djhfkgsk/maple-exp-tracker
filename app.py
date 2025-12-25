@@ -58,16 +58,37 @@ else:
         # 선택한 유저들의 '과거 기록'까지 모두 가져옴
         filtered_df = df[df['nickname'].isin(selected_users)]
         
-        # 3. 그래프 그리기
+        # 3. 그래프 그리기 설정
+        st.subheader("📈 경험치 그래프")
+        
+        # [기능 추가] 시작점을 0으로 맞추는 모드
+        show_growth_only = st.checkbox("🏁 시작점을 0으로 맞춰서 '순수 증가량'만 보기 (추천)", value=True)
+
+        plot_df = filtered_df.copy()
+
+        if show_growth_only:
+            # 각 유저별로 '가장 처음 수집된 경험치'를 빼서 0부터 시작하게 만듦
+            # 이렇게 하면 누가 더 빨리 먹는지 기울기가 아주 잘 보임
+            plot_df['exp_gained'] = plot_df.groupby('nickname')['exp'].transform(lambda x: x - x.min())
+            y_axis = 'exp_gained'
+            y_title = '기간 내 획득 경험치 (누적)'
+        else:
+            y_axis = 'exp'
+            y_title = '총 경험치'
+
         fig = px.line(
-            filtered_df, 
+            plot_df, 
             x='timestamp', 
-            y='exp', 
+            y=y_axis, 
             color='nickname',
             markers=True,
-            title='Top 랭커 경험치 경쟁 추이',
-            hover_data=['level', 'world']
+            title=f'Top 랭커 경쟁 현황 ({y_title})',
+            hover_data=['level', 'world', 'exp'] # 마우스 올리면 원래 경험치도 보이게
         )
+        
+        # Y축 이름 변경
+        fig.update_layout(yaxis_title=y_title)
+
         st.plotly_chart(fig, use_container_width=True)
         
         # 4. 표 보여주기 (최신 순)
