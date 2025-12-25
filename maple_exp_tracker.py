@@ -3,33 +3,28 @@ import pandas as pd
 import asyncio
 import aiohttp
 from datetime import datetime
-import pytz
 
 # ==========================================
 # [설정] API 키 및 유저 목록
 # ==========================================
 API_KEY = os.environ.get('NEXON_API_KEY')
 HEADERS = {
-    "x-nxopen-api-key": API_KEY
+    "x-nxopen-api-key": API_KEY,
+    "accept": "application/json"
 }
 
-# 추적할 닉네임 리스트 (여기에 본인이 원하는 랭커 리스트를 넣으세요)
-# 예시로 몇 명만 적어둡니다. 실제 사용하는 리스트로 교체하세요.
+# 추적할 닉네임 리스트 (200명 리스트 꼭 채워넣으세요!)
 NICKNAMES = [
     "캡틴김지명", "춘123자", "뉴비챌붕잉", "진캐12움", "구떼온",
     "후닝꽁꽁", "RetroArk", "제는맘", "욱브은월", "레거시",
     "챌섭제논싫어", "슐넌", "헌터램지", "루미너스zxcz", "크로아마세",
     "휴양림리움", "뽀꿈", "아델", "호영", "메르세데스"
-    # ... 기존에 쓰시던 200명 리스트를 여기에 넣으세요 ...
+    # ... 여기에 나머지 닉네임 추가 ...
 ]
 
-# ==========================================
-# [핵심] 비동기 데이터 수집 함수
-# ==========================================
 async def fetch_user_data(session, nickname):
-    # 1. OCID 조회 (닉네임 -> 고유 ID)
+    # 1. OCID 조회
     ocid_url = "https://open.api.nexon.com/maplestory/v1/id"
-    
     try:
         async with session.get(ocid_url, params={"character_name": nickname}, headers=HEADERS) as resp:
             if resp.status != 200:
@@ -44,23 +39,23 @@ async def fetch_user_data(session, nickname):
     if not ocid:
         return None
 
-    # 2. 캐릭터 기본 정보 조회 (레벨, 경험치 등)
+    # 2. 캐릭터 정보 조회 (날짜 파라미터 삭제 -> 최신 정보 요청)
     info_url = "https://open.api.nexon.com/maplestory/v1/character/basic"
-    # 현재 서버 시간(UTC)에 9시간을 더해 '한국 시간'을 만들고, 거기서 하루를 뺍니다.
-    yesterday = (datetime.now() + pd.Timedelta(hours=9) - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
     
     try:
-        async with session.get(info_url, params={"ocid": ocid, "date": yesterday}, headers=HEADERS) as resp:
+        # params에서 "date"를 제거했습니다.
+        async with session.get(info_url, params={"ocid": ocid}, headers=HEADERS) as resp:
             if resp.status != 200:
                 print(f"❌ {nickname}: 정보 조회 실패 (Code: {resp.status})")
+                # 만약 날짜 필수라고 에러가 나면, 넥슨 API 특성상 어쩔 수 없이 '어제'를 넣어야 합니다.
+                # 하지만 사용자님 의견대로 일단 빼고 시도합니다.
                 return None
             
             char_data = await resp.json()
             
-            # 필요한 데이터 추출
             return {
-                # UTC(서버 기본 시간)로 저장 -> app.py가 나중에 +9시간 해줌 (완벽!)
-                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                # UTC 시간 저장 -> app.py에서 +9시간 보정
+                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
                 "nickname": nickname,
                 "world": char_data.get("character_world_name", "Unknown"),
                 "level": char_data.get("character_level", 0),
@@ -71,17 +66,19 @@ async def fetch_user_data(session, nickname):
         return None
 
 async def main():
-    # 저장된 CSV가 있으면 불러오고, 없으면 새로 만듦
-    file_name = "exp_history.csv" # 소문자로 통일
+    file_name = "exp_history.csv" # 소문자 유지
     
     if os.path.exists(file_name):
         df_history = pd.read_csv(file_name)
     else:
         df_history = pd.DataFrame(columns=["timestamp", "nickname", "world", "level", "exp"])
 
-    print(f"🚀 {len(NICKNAMES)}명의 데이터 수집 시작...")
+    print(f"🚀 {len(NICKNAMES)}명의 최신 데이터 수집 시작...")
     
-    # 동시 실행 제한 (Semaphore): 한 번에 10명씩만 요청 (서버 과부하 방지)
+    if not API_KEY:
+        print("🚨 API KEY가 없습니다! Settings > Secrets를 확인하세요.")
+        return
+
     sem = asyncio.Semaphore(10)
 
     async def fetch_with_sem(session, nickname):
@@ -92,18 +89,13 @@ async def main():
         tasks = [fetch_with_sem(session, name) for name in NICKNAMES]
         results = await asyncio.gather(*tasks)
 
-    # 실패한 건(None) 제외하고 성공한 것만 모으기
     valid_data = [r for r in results if r is not None]
     
     print(f"✅ 수집 완료: {len(valid_data)}/{len(NICKNAMES)} 성공")
 
     if valid_data:
         new_df = pd.DataFrame(valid_data)
-        
-        # 기존 데이터에 합치기
         updated_df = pd.concat([df_history, new_df], ignore_index=True)
-        
-        # 파일 저장
         updated_df.to_csv(file_name, index=False, encoding='utf-8-sig')
         print("💾 데이터 저장 완료!")
     else:
