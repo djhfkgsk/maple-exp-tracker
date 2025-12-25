@@ -222,7 +222,7 @@ else:
             if gap <= 0:
                 msg = "이미 역전함"
             elif speed_gap <= 0:
-                msg = "추월 불가 (느림)"
+                msg = "추월 불가"
             else:
                 # 역전 가능
                 hours_needed = gap / speed_gap
@@ -246,7 +246,7 @@ else:
             
         # 1등은 목표가 없음
         if sorted_metrics:
-            overtake_info[sorted_metrics[0]['nickname']] = {"target": "-", "time": "독주 중 👑", "gap": 0}
+            overtake_info[sorted_metrics[0]['nickname']] = {"target": "-", "time": "이미 1등", "gap": 0}
 
         # -------------------------------------------------------
         # 표 만들기 (선택된 유저만 표시)
