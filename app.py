@@ -36,6 +36,50 @@ df = load_data()
 if df.empty:
     st.warning("아직 수집된 데이터가 없습니다. 조금만 기다려주세요!")
 else:
+    # 1. 최신 데이터 기준 랭킹 산정
+    latest_time = df['timestamp'].max()
+    
+    # 전체 데이터를 레벨/경험치 순으로 정렬
+    ranked_df = df[df['timestamp'] == latest_time].sort_values(by=['level', 'exp'], ascending=False)
+    
+    # [핵심] 상위 20명만 자르기 (Top 20)
+    top_20_df = ranked_df.head(20)
+    top_20_nicknames = top_20_df['nickname'].tolist()
+    
+    st.subheader(f"🏆 현재 Top 20 랭커 현황 (총 {len(top_20_df)}명)")
+    
+    # 2. 사이드바 설정
+    st.sidebar.header("검색 옵션")
+    
+    # 선택 가능한 목록을 '전체'가 아닌 'Top 20'으로 제한
+    selected_users = st.sidebar.multiselect(
+        "확인할 유저를 선택하세요 (Top 20 한정)",
+        top_20_nicknames,  # 선택지는 20명뿐
+        default=top_20_nicknames[:5] # 기본적으로 1~5등 5명을 미리 찍어줌
+    )
+
+    if selected_users:
+        # 선택한 유저들의 '과거 기록'까지 모두 가져옴
+        filtered_df = df[df['nickname'].isin(selected_users)]
+        
+        # 3. 그래프 그리기
+        fig = px.line(
+            filtered_df, 
+            x='timestamp', 
+            y='exp', 
+            color='nickname',
+            markers=True,
+            title='Top 랭커 경험치 경쟁 추이',
+            hover_data=['level', 'world']
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # 4. 표 보여주기 (최신 순)
+        with st.expander("상세 데이터 표 보기"):
+            st.dataframe(filtered_df.sort_values(by='timestamp', ascending=False))
+            
+    else:
+        st.info("왼쪽 사이드바에서 유저를 선택해주세요.")
     # 1. 최신 데이터 기준 상위 랭커 목록 추출
     latest_time = df['timestamp'].max()
     latest_df = df[df['timestamp'] == latest_time].sort_values(by=['level', 'exp'], ascending=False)
